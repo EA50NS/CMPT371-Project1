@@ -25,7 +25,13 @@ def parse_args(argv):
     (directory), --workers (int, how many threads the pool starts with,
     default 8). Accept --workers from task 1 even though nothing uses it until
     task 5: every command in the handout passes it."""
-    raise NotImplementedError
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', required=True, help="port number", type=int)    
+    parser.add_argument('--root', required=True, help="root directory", type=str)    
+    parser.add_argument('--workers', default=8, help="number of workers", type=int)    
+    args = parser.parse_args(argv)
+    return args.port, args.root, args.workers
+
 
 
 def recv_request_head(conn):
@@ -51,9 +57,60 @@ def resolve_path(root, target):
     Return None if the target is malformed.
     All three rules are graded: /index.html?x=1 and /index.html are the same
     file, / is that directory's index.html, and /page/sub.html works."""
-    raise NotImplementedError
+    remove_query = ""
+    percent_decode = ""
+    to_be_decoded = ""
+    counter = 0
+
+    if (len(target) <= 0):
+        return None
+
+    for char in target:
+        if (char == '?'):
+            break     
+        remove_query = remove_query + char
+
+    length = len(remove_query)
+    while (length > counter):
+        if (remove_query[counter] == '%'):
+            if (counter + 2 >= length):
+                return None            
+             
+            to_be_decoded = to_be_decoded + remove_query[counter + 1] 
+            to_be_decoded = to_be_decoded + remove_query[counter + 2]
+
+            if not all(c in "0123456789abcdefABCDEF" for c in to_be_decoded):
+                return None
+
+            char = chr(int(to_be_decoded, 16))
+            percent_decode = percent_decode + char
+            counter = counter + 3
+            to_be_decoded = ""
+            continue;
+
+        percent_decode = percent_decode + remove_query[counter]
+        counter = counter + 1         
+
+    length = len(percent_decode)
+    if (percent_decode[length-1] == '/'):
+        percent_decode = percent_decode + "index.html"
+
+    root_abs = os.path.abspath(root)
+    if(percent_decode[0] == '/'):
+        percent_decode = percent_decode[1:]
+        final = os.path.abspath(os.path.join(root, percent_decode))
+        if (final != root_abs and not final.startswith(root_abs + os.sep)):
+            return None
+        return final
+    
+    else:
+        final = os.path.abspath(os.path.join(root, percent_decode))
+        if (final != root_abs and not final.startswith(root_abs + os.sep)):
+            return None
+        return final
 
 
+        
 def build_response(status, reason, body, content_type, extra=None):
     """TASK 1. Return the full response as bytes: status line, the Date, Server,
     Content-Type, Content-Length and Connection headers, any extra headers,
