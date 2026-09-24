@@ -1,4 +1,4 @@
-# Name: <your full name>   Student number: <your student number>
+# Name: Eason Wang  Student number: 301618883
 """CMPT 371 Project 1 - static HTTP/1.1 server on raw TCP sockets.
 
 Usage: python3 server.py --port PORT --root DIR [--workers N]
@@ -40,7 +40,14 @@ def recv_request_head(conn):
     if the client closed the connection first.
     In task 1 handle_connection may read the head with a single recv(); this is
     what replaces that call, and is where reading becomes correct."""
-    raise NotImplementedError
+    buffer = b""
+    while b"\r\n\r\n" not in buffer:
+        chunk = conn.recv(4096)
+        if not chunk:
+            return None
+        buffer += chunk
+    return buffer
+
 
 
 def parse_request(head):
@@ -48,7 +55,26 @@ def parse_request(head):
     headers is a dict with lower-cased names. Raise ValueError if the request
     line is not three fields or a header line has no colon; handle_request turns
     that into a 400."""
-    raise NotImplementedError
+    text = head.decode()
+    lines = text.split("\r\n")
+
+    request_line = lines[0]
+    parts = request_line.split(" ")
+    if len(parts) != 3:
+        raise ValueError("malformed request line")
+    method, target, version = parts
+
+    headers = {}
+    for line in lines[1:]:
+        if line == "":
+            break  # the blank line ends the header block
+        if ":" not in line:
+            raise ValueError("malformed header line")
+        name, value = line.split(":", 1)
+        headers[name.strip().lower()] = value.strip()
+
+    return method, target, version, headers
+
 
 
 def resolve_path(root, target):
@@ -110,15 +136,35 @@ def resolve_path(root, target):
         return final
 
 
-        
-def build_response(status, reason, body, content_type, extra=None):
+
+def build_response(status, reason, body, content_type, extra=None, include_body=True):
     """TASK 1. Return the full response as bytes: status line, the Date, Server,
     Content-Type, Content-Length and Connection headers, any extra headers,
     a blank line, then body.
     Every response goes through here, including 404, 400, 405 and 501, so every
     response carries all five headers. Content-Length is the number of body
     bytes that follow, and nothing else."""
-    raise NotImplementedError
+    builder = ""
+    http_response = f"HTTP/1.1 {status} {reason}\r\n"
+
+    date = formatdate(usegmt=True)
+    date_build = f"Date: {date}\r\n"
+
+    server = f"Server: cmpt371/1.0\r\n"
+    type_content = f"Content-Type: {content_type}\r\n"
+    length_content = f"Content-Length: {len(body)}\r\n"
+    connection = f"Connection: keep-alive\r\n"
+
+    builder = http_response + date_build + server + type_content + length_content + connection 
+
+    if extra:
+        for name, value in extra.items():
+            builder = builder + f"{name}: {value}\r\n"
+
+    builder = builder + "\r\n"
+    header_bytes = builder.encode("utf-8")
+    return header_bytes + (body if include_body == True else b"")
+        
 
 
 def handle_request(head, root):
@@ -128,7 +174,44 @@ def handle_request(head, root):
     from the file extension. Task 3: 400 (malformed request line or header line,
     no Host), 405 (POST and the other known methods, with Allow: GET, HEAD) and
     501 (a token that is not an HTTP method)."""
-    raise NotImplementedError
+    try: 
+        method, target, version, headers = parse_request(head)
+    except ValueError:
+        return build_response(400, "Bad Request", b"400 Bad Request\n", "text/html")
+
+    if "host" not in headers:
+        return build_response(400, "Bad Request", b"400 Bad Request\n", "text/html")
+
+    if method not in KNOWN_METHODS:
+        return build_response(501, "Not Implemented", b"Not Implemented\n", "text/html")
+    
+    if method not in ("GET", "HEAD"):
+        return build_response(405, "Method Not Allowed", b"405 Method Not Allowed\n", "text/html", extra={"Allow": "GET, HEAD"})
+
+
+
+    resolution_path = (resolve_path(root, target))
+
+    if (resolution_path == None): #404 branch
+        return build_response(404, "Not Found", b"404 Not Found\n", "text/html", include_body=(method != "HEAD"))
+    elif(os.path.isfile(resolution_path) != True): #missing 404 branch
+        return build_response(404, "Not Found", b"404 Not Found\n", "text/html", include_body=(method!="HEAD"))
+
+    else: #200 branch
+        content_type = mimetypes.guess_type(resolution_path)[0]
+        if (content_type is None):
+            content_type = "application/octet-stream"
+
+        if (method == "GET"):
+            with open(resolution_path, "rb") as f:
+                body = f.read()
+            return build_response(200, "OK", body, content_type, include_body=True)
+        if (method == "HEAD"):
+            with open(resolution_path, "rb") as f:
+                body = f.read()
+            return build_response(200, "OK", body, content_type, include_body=False)
+
+
 
 
 def handle_connection(conn, root):
@@ -139,7 +222,16 @@ def handle_connection(conn, root):
     recv_request_head. Task 5: after each response, increment requests_served
     under counter_lock and print 'served <n>' to stderr, where n is the value
     this request produced, read inside the same lock that incremented it."""
-    raise NotImplementedError
+    while True:
+        head = conn.recv(4096)
+        if not head:
+            break
+
+        response = handle_request(head, root)
+        conn.sendall(response)
+
+    conn.close()
+
 
 
 def worker(work_queue, root):
@@ -148,6 +240,7 @@ def worker(work_queue, root):
     Nothing before task 5 calls this, and main must not start any worker threads
     until you write it."""
     raise NotImplementedError
+
 
 
 def main(argv=None):
@@ -159,8 +252,22 @@ def main(argv=None):
     # Given. The grading script reads this line to find your server, so print it
     # exactly as written, immediately after listen(), and keep flush=True.
     #     print("Listening on port %d" % listener.getsockname()[1], flush=True)
-    raise NotImplementedError
+    port, root, workers = parse_args(argv)
 
+    listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listen.bind(("127.0.0.1", port))
+    listen.listen()
 
+    print("Listening on port %d" % listen.getsockname()[1], flush=True)
+
+    try:
+        while True:
+            conn, addr = listen.accept()
+            handle_connection(conn, root)
+    finally:
+        listen.close()
+
+    
 if __name__ == "__main__":
     main()
