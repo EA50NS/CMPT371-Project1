@@ -137,7 +137,7 @@ def resolve_path(root, target):
 
 
 
-def build_response(status, reason, body, content_type, extra=None, include_body=True):
+def build_response(status, reason, body, content_type, extra=None):
     """TASK 1. Return the full response as bytes: status line, the Date, Server,
     Content-Type, Content-Length and Connection headers, any extra headers,
     a blank line, then body.
@@ -163,7 +163,7 @@ def build_response(status, reason, body, content_type, extra=None, include_body=
 
     builder = builder + "\r\n"
     header_bytes = builder.encode("utf-8")
-    return header_bytes + (body if include_body == True else b"")
+    return header_bytes + body
         
 
 
@@ -188,29 +188,39 @@ def handle_request(head, root):
     if method not in ("GET", "HEAD"):
         return build_response(405, "Method Not Allowed", b"405 Method Not Allowed\n", "text/html", extra={"Allow": "GET, HEAD"})
 
-
-
+    # everything passed, we can resolve the path now.
     resolution_path = (resolve_path(root, target))
 
     if (resolution_path == None): #404 branch
-        return build_response(404, "Not Found", b"404 Not Found\n", "text/html", include_body=(method != "HEAD"))
-    elif(os.path.isfile(resolution_path) != True): #missing 404 branch
-        return build_response(404, "Not Found", b"404 Not Found\n", "text/html", include_body=(method!="HEAD"))
+        response = build_response(404, "Not Found", b"404 Not Found\n", "text/html")
+        if (method == "HEAD"): # no head, no body
+            sep = response.find(b"\r\n\r\n")
+            response = response[: sep + 4]
+        return response
+
+    elif(os.path.isfile(resolution_path) != True):  #missing 404
+        response = build_response(404, "Not Found", b"404 Not Found\n", "text/html")
+        if (method == "HEAD"):
+            sep = response.find(b"\r\n\r\n")
+            response = response[: sep + 4]
+        return response
 
     else: #200 branch
         content_type = mimetypes.guess_type(resolution_path)[0]
         if (content_type is None):
             content_type = "application/octet-stream"
 
-        if (method == "GET"):
-            with open(resolution_path, "rb") as f:
-                body = f.read()
-            return build_response(200, "OK", body, content_type, include_body=True)
-        if (method == "HEAD"):
-            with open(resolution_path, "rb") as f:
-                body = f.read()
-            return build_response(200, "OK", body, content_type, include_body=False)
+        with open(resolution_path, "rb") as f:
+            body = f.read()
 
+        if (method == "GET"):
+            return build_response(200, "OK", body, content_type)
+
+        if (method == "HEAD"):
+            response = build_response(200, "OK", body, content_type)
+            sep = response.find(b"\r\n\r\n")
+            response = response[: sep + 4]
+            return response
 
 
 
@@ -222,15 +232,28 @@ def handle_connection(conn, root):
     recv_request_head. Task 5: after each response, increment requests_served
     under counter_lock and print 'served <n>' to stderr, where n is the value
     this request produced, read inside the same lock that incremented it."""
-    while True:
-        head = conn.recv(4096)
-        if not head:
-            break
+    global requests_served
+    conn.settimeout(5)
 
-        response = handle_request(head, root)
-        conn.sendall(response)
+    try:
+        while True:
+            head = recv_request_head(conn)
+            if not head:
+                break
 
-    conn.close()
+            response = handle_request(head, root)
+            conn.sendall(response)
+
+            with counter_lock:
+                requests_served += 1
+                mine = requests_served
+            print("served %d" % mine, file=sys.stderr, flush=True)
+
+    except(socket.timeout, ConnectionError, OSError):
+        pass
+
+    finally:
+        conn.close()
 
 
 
@@ -239,7 +262,13 @@ def worker(work_queue, root):
     Every worker thread runs this; none of them is created per connection.
     Nothing before task 5 calls this, and main must not start any worker threads
     until you write it."""
-    raise NotImplementedError
+    while True:
+        conn = work_queue.get()
+
+        try:
+            handle_connection(conn, root)
+        finally:
+            work_queue.task_done() 
 
 
 
@@ -260,11 +289,18 @@ def main(argv=None):
     listen.listen()
 
     print("Listening on port %d" % listen.getsockname()[1], flush=True)
+    work_queue = queue.Queue()
+    worker_threads = []
+
+    for i in range(workers):
+        t = threading.Thread(target=worker, args=(work_queue, root), daemon=True)
+        t.start()
+        worker_threads.append(t)
 
     try:
         while True:
             conn, addr = listen.accept()
-            handle_connection(conn, root)
+            work_queue.put(conn)
     finally:
         listen.close()
 
