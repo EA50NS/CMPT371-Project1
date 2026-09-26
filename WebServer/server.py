@@ -41,8 +41,8 @@ def recv_request_head(conn):
     In task 1 handle_connection may read the head with a single recv(); this is
     what replaces that call, and is where reading becomes correct."""
     buffer = b""
-    while b"\r\n\r\n" not in buffer:
-        chunk = conn.recv(4096)
+    while b"\r\n\r\n" not in buffer:        # we wait for \r\n\r\n as this is HTTP convention for ending segments
+        chunk = conn.recv(4096)             # usually it's only one \r\n pair, for a complete ending there's two.
         if not chunk:
             return None
         buffer += chunk
@@ -62,16 +62,16 @@ def parse_request(head):
     parts = request_line.split(" ")
     if len(parts) != 3:
         raise ValueError("malformed request line")
-    method, target, version = parts
+    method, target, version = parts                     # want only method, targe, version
 
-    headers = {}
-    for line in lines[1:]:
+    headers = {}                                        # rest of the header creation
+    for line in lines[1:]:                          
         if line == "":
             break  # the blank line ends the header block
         if ":" not in line:
             raise ValueError("malformed header line")
-        name, value = line.split(":", 1)
-        headers[name.strip().lower()] = value.strip()
+        name, value = line.split(":", 1)                # split on the first and only 1 colon 
+        headers[name.strip().lower()] = value.strip()   # strip white space, and lowercase it
 
     return method, target, version, headers
 
@@ -91,14 +91,14 @@ def resolve_path(root, target):
     if (len(target) <= 0):
         return None
 
-    for char in target:
+    for char in target: 
         if (char == '?'):
             break     
-        remove_query = remove_query + char
+        remove_query = remove_query + char      # remove anything after '?'
 
     length = len(remove_query)
     while (length > counter):
-        if (remove_query[counter] == '%'):
+        if (remove_query[counter] == '%'):      # percent decode any percents
             if (counter + 2 >= length):
                 return None            
              
@@ -119,12 +119,12 @@ def resolve_path(root, target):
 
     length = len(percent_decode)
     if (percent_decode[length-1] == '/'):
-        percent_decode = percent_decode + "index.html"
+        percent_decode = percent_decode + "index.html"      # if ends with '/' add index.html
 
-    root_abs = os.path.abspath(root)
+    root_abs = os.path.abspath(root)                        # make sure only in root path
     if(percent_decode[0] == '/'):
         percent_decode = percent_decode[1:]
-        final = os.path.abspath(os.path.join(root, percent_decode))
+        final = os.path.abspath(os.path.join(root, percent_decode))     # if starts with '/', remove it and 
         if (final != root_abs and not final.startswith(root_abs + os.sep)):
             return None
         return final
@@ -174,6 +174,7 @@ def handle_request(head, root):
     from the file extension. Task 3: 400 (malformed request line or header line,
     no Host), 405 (POST and the other known methods, with Allow: GET, HEAD) and
     501 (a token that is not an HTTP method)."""
+    time.sleep(1) #thread testing
     try: 
         method, target, version, headers = parse_request(head)
     except ValueError:
@@ -233,18 +234,18 @@ def handle_connection(conn, root):
     under counter_lock and print 'served <n>' to stderr, where n is the value
     this request produced, read inside the same lock that incremented it."""
     global requests_served
-    conn.settimeout(5)
+    conn.settimeout(5)                                  # if no data comes in 5 seconds, don't block forever
 
     try:
         while True:
-            head = recv_request_head(conn)
+            head = recv_request_head(conn)              
             if not head:
                 break
 
-            response = handle_request(head, root)
-            conn.sendall(response)
+            response = handle_request(head, root)       # take the head and formulate a response
+            conn.sendall(response)                      # respond to the client that sent the request
 
-            with counter_lock:
+            with counter_lock:                          # locking mechanism to ensure no data race for requests_served
                 requests_served += 1
                 mine = requests_served
             print("served %d" % mine, file=sys.stderr, flush=True)
@@ -263,10 +264,9 @@ def worker(work_queue, root):
     Nothing before task 5 calls this, and main must not start any worker threads
     until you write it."""
     while True:
-        conn = work_queue.get()
-
+        conn = work_queue.get()                 # pull an accepted from the queue
         try:
-            handle_connection(conn, root)
+            handle_connection(conn, root)       # take the socket object (and root dir) and handle the connection
         finally:
             work_queue.task_done() 
 
@@ -283,27 +283,33 @@ def main(argv=None):
     #     print("Listening on port %d" % listener.getsockname()[1], flush=True)
     port, root, workers = parse_args(argv)
 
-    listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listen.bind(("127.0.0.1", port))
-    listen.listen()
+    listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)      # Socket creation w/ IPv4
+    listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)    # Restart server quickly allowing usage of same port 
+    listen.bind(("127.0.0.1", port))                                # Attaches socket to local host (IP), same machine only
+    listen.listen()                                                 # Wait for connections
 
     print("Listening on port %d" % listen.getsockname()[1], flush=True)
+    
     work_queue = queue.Queue()
     worker_threads = []
-
     for i in range(workers):
-        t = threading.Thread(target=worker, args=(work_queue, root), daemon=True)
-        t.start()
-        worker_threads.append(t)
+
+         # Create new thread object, but don't run yet - set up with the worker() func
+         # when started: args=(work_queue,root): worker() func gets called
+         # daemon = True: threads let program end as worker works infinitely.
+        t = threading.Thread(target=worker, args=(work_queue, root), daemon=True)      
+        t.start()                       # launch thread
+        worker_threads.append(t)        #
 
     try:
         while True:
-            conn, addr = listen.accept()
-            work_queue.put(conn)
+            conn, addr = listen.accept()    # accepted TCP connection (conn) is socket object
+            work_queue.put(conn)            # put socket object into queue for worker() func
     finally:
         listen.close()
 
     
 if __name__ == "__main__":
     main()
+
+# Usage: python3 server.py --port PORT --root DIR [--workers N]
